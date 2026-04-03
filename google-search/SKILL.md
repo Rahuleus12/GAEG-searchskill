@@ -1,6 +1,6 @@
 ---
 name: google-search
-description: Search the web for information on any topic. Returns a summary of top search results with titles, snippets, and source links. Use when the user asks to "search for", "look up", "find info about", "google", "search the web", "what's the latest on", or any query that requires up-to-date information from the internet.
+description: Search the web for information on any topic and return a summary of top search results with titles, snippets, and source links.
 ---
 
 # Google Search
