@@ -5,33 +5,29 @@
     </head>
     <body>
         <script>
-            (async () => {
-                function done(obj) {
-                    skill.postMessage(JSON.stringify(obj));
-                }
-
+            window.ai_edge_gallery_get_result = async function (data) {
                 let query = "";
                 try {
                     const parsed =
                         typeof data === "string" ? JSON.parse(data) : data;
                     query = (parsed.query || "").trim();
                 } catch (e) {
-                    done({ error: "Could not parse input.", results: [] });
-                    return;
+                    return JSON.stringify({
+                        error: "Could not parse input data.",
+                    });
                 }
 
                 if (!query) {
-                    done({ error: "No query provided.", results: [] });
-                    return;
+                    return JSON.stringify({ error: "No query provided." });
                 }
 
                 let results = [];
 
-                // 1. Try DuckDuckGo
+                // 1. DuckDuckGo Instant Answer API
                 try {
-                    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-                    const res = await fetch(url);
-                    const ddg = await res.json();
+                    const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+                    const ddgRes = await fetch(ddgUrl);
+                    const ddg = await ddgRes.json();
 
                     if (ddg.AbstractText) {
                         results.push({
@@ -67,14 +63,16 @@
                             url: "",
                         });
                     }
-                } catch (e) {}
+                } catch (e) {
+                    // DuckDuckGo failed, fall through to Wikipedia
+                }
 
-                // 2. Fallback to Wikipedia
+                // 2. Wikipedia fallback
                 if (results.length === 0) {
                     try {
-                        const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`;
-                        const res = await fetch(url);
-                        const wiki = await res.json();
+                        const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`;
+                        const wikiRes = await fetch(wikiUrl);
+                        const wiki = await wikiRes.json();
                         for (const h of wiki.query?.search || []) {
                             results.push({
                                 title: h.title,
@@ -82,19 +80,24 @@
                                 url: `https://en.wikipedia.org/wiki/${encodeURIComponent(h.title.replace(/ /g, "_"))}`,
                             });
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        // Wikipedia also failed
+                    }
                 }
 
                 if (results.length === 0) {
-                    done({
-                        query,
-                        error: "No results found. Try a different search term.",
-                        results: [],
+                    return JSON.stringify({
+                        error: `No results found for "${query}". Try a more specific search term.`,
                     });
-                } else {
-                    done({ query, results: results.slice(0, 5) });
                 }
-            })();
+
+                return JSON.stringify({
+                    result: {
+                        query,
+                        results: results.slice(0, 5),
+                    },
+                });
+            };
         </script>
     </body>
 </html>
