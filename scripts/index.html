@@ -26,68 +26,86 @@
                         error: "No query or URL provided.",
                     });
 
+                // ── Extract YouTube URL from query if embedded in text ────────────────────
+                if (!url) {
+                    const match = query.match(
+                        /https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/,
+                    );
+                    if (match) url = match[0];
+                }
+
                 // ── Auto-detect type ──────────────────────────────────────────────────────
                 const isYouTube =
                     type === "youtube" ||
                     /youtube\.com|youtu\.be/i.test(url) ||
-                    /youtube|youtu\.be|yt video|youtube link/i.test(query);
+                    /\byoutube\b|\byoutu\.be\b|\byt\b.*video|video.*\byt\b/i.test(
+                        query,
+                    );
 
                 const isWeather =
                     type === "weather" ||
-                    /\bweather\b|\btemperature\b|\bforecast\b|\brain\b|\bhumidity\b/i.test(
+                    /\bweather\b|\btemperature\b|\bforecast\b|\brain today\b|\bhumidity\b/i.test(
                         query,
                     );
 
                 const isNews =
                     type === "news" ||
-                    /\bnews\b|\blatest\b|\bbreaking\b|\bheadlines?\b|\btoday\b|\brecent\b|\bcurrent events?\b|\bupdate\b/i.test(
+                    /\bnews\b|\blatest\b|\bbreaking\b|\bheadlines?\b|\brecent\b|\bcurrent events?\b|\bwhat happened\b/i.test(
                         query,
                     );
 
                 // ══════════════════════════════════════════════════════════════════════════
-                // 1. YOUTUBE — oEmbed (no key, no CORS issues)
+                // 1. YOUTUBE — noembed.com (confirmed CORS-open proxy, no key needed)
                 // ══════════════════════════════════════════════════════════════════════════
                 if (isYouTube) {
-                    // Extract URL from query if not passed directly
-                    const videoUrl =
-                        url || (query.match(/https?:\/\/[^\s]+/)?.[0] ?? "");
-
-                    if (!videoUrl) {
+                    if (!url) {
                         return JSON.stringify({
-                            error: "Please provide a YouTube video URL, e.g. 'get info for https://youtu.be/xxxxx'",
+                            error: "Please include the YouTube video URL in your message, e.g. 'get info for https://youtu.be/abc123'",
                         });
                     }
-
                     try {
-                        const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
-                        const res = await fetch(oembedUrl);
-                        if (!res.ok)
-                            return JSON.stringify({
-                                error: "Could not fetch YouTube video info. Check the URL is valid and public.",
-                            });
+                        // noembed.com is a CORS-open oEmbed proxy — works reliably in webviews
+                        const noembedUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}&format=json`;
+                        const res = await fetch(noembedUrl);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
                         const v = await res.json();
+
+                        if (v.error)
+                            return JSON.stringify({
+                                error: `YouTube info not available: ${v.error}`,
+                            });
+
+                        // Extract video ID for thumbnail fallback
+                        const vidIdMatch = url.match(
+                            /(?:v=|youtu\.be\/)([^&?/]+)/,
+                        );
+                        const videoId = vidIdMatch ? vidIdMatch[1] : null;
+                        const thumbnail = videoId
+                            ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
+                            : v.thumbnail_url || "";
 
                         return JSON.stringify({
                             result: {
                                 source: "SKILL_EXECUTED",
                                 type: "youtube",
-                                title: v.title,
-                                channel: v.author_name,
-                                channel_url: v.author_url,
-                                thumbnail: v.thumbnail_url,
-                                video_url: videoUrl,
-                                provider: v.provider_name,
+                                title: v.title || "Unknown title",
+                                channel: v.author_name || "Unknown channel",
+                                channel_url: v.author_url || "",
+                                thumbnail,
+                                video_url: url,
+                                width: v.width,
+                                height: v.height,
                             },
                         });
                     } catch (e) {
                         return JSON.stringify({
-                            error: `YouTube lookup failed: ${e.message}`,
+                            error: `YouTube lookup failed: ${e.message}. Check the URL is public and correct.`,
                         });
                     }
                 }
 
                 // ══════════════════════════════════════════════════════════════════════════
-                // 2. WEATHER — Open-Meteo (no key)
+                // 2. WEATHER — Open-Meteo (no key, confirmed CORS-open)
                 // ══════════════════════════════════════════════════════════════════════════
                 if (isWeather) {
                     try {
@@ -105,7 +123,7 @@
                         const geoData = await geoRes.json();
                         if (!geoData.results?.length)
                             return JSON.stringify({
-                                error: `Location not found: "${location}". Try a more specific city name.`,
+                                error: `Location not found: "${location}". Try a city name like "Mumbai" or "Tokyo".`,
                             });
 
                         const { latitude, longitude, name, country, timezone } =
@@ -144,7 +162,7 @@
                                 source: "SKILL_EXECUTED",
                                 type: "weather",
                                 location: `${name}, ${country}`,
-                                condition: codes[w.weather_code] || "Unknown",
+                                condition: codes[w.weather_code] ?? "Unknown",
                                 temperature_c: w.temperature_2m,
                                 feels_like_c: w.apparent_temperature,
                                 humidity_percent: w.relative_humidity_2m,
@@ -161,57 +179,76 @@
                 }
 
                 // ══════════════════════════════════════════════════════════════════════════
-                // 3. NEWS — HackerNews (tech) + Wikipedia search
+                // 3. NEWS — Wikipedia OpenSearch + Page Summaries (confirmed CORS-open)
+                //    Uses Wikipedia's live search which surfaces recent topics & events
                 // ══════════════════════════════════════════════════════════════════════════
                 if (isNews) {
                     let articles = [];
 
-                    // HackerNews Algolia search API — free, no key, open CORS
+                    // Step 1: OpenSearch to find matching article titles
                     try {
-                        const hnUrl = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=5`;
-                        const hnRes = await fetch(hnUrl);
-                        const hn = await hnRes.json();
+                        const searchRes = await fetch(
+                            `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=4&format=json&origin=*`,
+                        );
+                        const [, titles, , links] = await searchRes.json();
 
-                        for (const hit of (hn.hits || []).slice(0, 5)) {
-                            if (hit.title) {
+                        // Step 2: Fetch summary for each result
+                        for (let i = 0; i < Math.min(titles.length, 3); i++) {
+                            try {
+                                const sumRes = await fetch(
+                                    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(titles[i].replace(/ /g, "_"))}`,
+                                );
+                                if (!sumRes.ok) continue;
+                                const s = await sumRes.json();
                                 articles.push({
-                                    title: hit.title,
-                                    snippet: hit.story_text
-                                        ? hit.story_text
-                                              .replace(/<[^>]+>/g, "")
-                                              .substring(0, 200)
-                                        : `Score: ${hit.points} | Comments: ${hit.num_comments}`,
+                                    title: s.title,
+                                    snippet: s.extract
+                                        ? s.extract.substring(0, 300)
+                                        : "",
                                     url:
-                                        hit.url ||
-                                        `https://news.ycombinator.com/item?id=${hit.objectID}`,
-                                    source: "Hacker News",
-                                    date:
-                                        hit.created_at?.substring(0, 10) || "",
+                                        s.content_urls?.desktop?.page ||
+                                        links[i] ||
+                                        "",
+                                    source: "Wikipedia",
                                 });
-                            }
+                            } catch (e) {}
                         }
                     } catch (e) {}
 
-                    // Wikipedia search as general knowledge fallback
-                    if (articles.length < 3) {
+                    // Step 3: DuckDuckGo for additional context
+                    if (articles.length < 2) {
                         try {
-                            const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`;
-                            const wikiRes = await fetch(wikiUrl);
-                            const wiki = await wikiRes.json();
-                            for (const h of wiki.query?.search || []) {
+                            const ddg = await (
+                                await fetch(
+                                    `https://api.duckduckgo.com/?q=${encodeURIComponent(query + " news")}&format=json&no_html=1&skip_disambig=1`,
+                                )
+                            ).json();
+                            if (ddg.AbstractText) {
                                 articles.push({
-                                    title: h.title,
-                                    snippet: h.snippet.replace(/<[^>]+>/g, ""),
-                                    url: `https://en.wikipedia.org/wiki/${encodeURIComponent(h.title.replace(/ /g, "_"))}`,
-                                    source: "Wikipedia",
+                                    title: ddg.Heading || query,
+                                    snippet: ddg.AbstractText,
+                                    url: ddg.AbstractURL || "",
+                                    source: "DuckDuckGo",
                                 });
+                            }
+                            for (const t of (ddg.RelatedTopics || []).slice(
+                                0,
+                                3,
+                            )) {
+                                if (t.Text && t.FirstURL)
+                                    articles.push({
+                                        title: t.Text.substring(0, 80),
+                                        snippet: t.Text,
+                                        url: t.FirstURL,
+                                        source: "DuckDuckGo",
+                                    });
                             }
                         } catch (e) {}
                     }
 
                     if (!articles.length)
                         return JSON.stringify({
-                            error: `No news found for "${query}". Try different keywords.`,
+                            error: `No news results found for "${query}". Try more specific keywords.`,
                         });
 
                     return JSON.stringify({
@@ -219,7 +256,8 @@
                             source: "SKILL_EXECUTED",
                             type: "news",
                             query,
-                            articles: articles.slice(0, 6),
+                            note: "Results from Wikipedia and DuckDuckGo. For live breaking news, include a specific topic.",
+                            articles: articles.slice(0, 5),
                         },
                     });
                 }
@@ -235,14 +273,12 @@
                             `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
                         )
                     ).json();
-
                     if (ddg.AbstractText)
                         results.push({
                             title: ddg.Heading || query,
                             snippet: ddg.AbstractText,
                             url: ddg.AbstractURL || "",
                         });
-
                     for (const t of (ddg.RelatedTopics || []).slice(0, 4)) {
                         if (t.Text && t.FirstURL)
                             results.push({
@@ -258,7 +294,6 @@
                                     url: s.FirstURL,
                                 });
                     }
-
                     if (ddg.Answer && !results.length)
                         results.push({
                             title: "Answer",
@@ -267,7 +302,6 @@
                         });
                 } catch (e) {}
 
-                // Wikipedia fallback
                 if (!results.length) {
                     try {
                         const w = await (
@@ -285,7 +319,7 @@
 
                 if (!results.length)
                     return JSON.stringify({
-                        error: `No results found for "${query}". Try a different search term.`,
+                        error: `No results found for "${query}". Try different keywords.`,
                     });
 
                 return JSON.stringify({
