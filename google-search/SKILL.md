@@ -1,28 +1,19 @@
 ---
 name: google-search
-description: Search the web for information on any topic and return a summary of top results.
+description: Search the web for information on any topic using DuckDuckGo and Wikipedia APIs, and return a summary of top results with sources.
 ---
 
 # Google Search
 
-## Examples
-
-* "Search for the latest news about AI"
-* "Look up information about space exploration"
-* "Find info about climate change research"
-* "What is the latest on AI regulations?"
-
 ## Instructions
 
-Call the `run_js` tool with the following exact parameters:
+Call the `run_js` tool using `index.html` and a JSON string for `data` with the following fields:
+- **query**: Required. Extract ONLY the primary search keywords or topic (e.g., "quantum computing", "James Webb Space Telescope", "climate change research"). Remove question words, conversational text, or modifiers (e.g., do NOT include "latest", "news about", "look up", "find info about"). Provide the core search terms that would best match the user's information need.
 
-- script name: `index.html`
-- data: A JSON string with the following field:
-  - `query`: String. The search query to look up on the web.
+## Constraints
 
-## Rules
-
-- Always include source URLs so the user can verify information
-- If the search returns no results, suggest alternative queries
-- Summarize the key findings from the results rather than just listing them
-- If the user asks follow-up questions, perform a new search with a refined query
+- Summarize the key findings from the search results in 3-5 sentences to conserve context. Always ensure your response ends with a finished sentence.
+- Always include source URLs from the results so the user can verify information.
+- If the search returns no results or the results are not relevant to the user's question, briefly state this and suggest 1-2 alternative search queries that might be more helpful.
+- If the user asks follow-up questions, perform a new search with a refined query based on the additional context.
+- Do not fabricate information beyond what is returned in the search results.
