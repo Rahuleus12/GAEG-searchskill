@@ -7,10 +7,13 @@
         <script>
             window.ai_edge_gallery_get_result = async function (data) {
                 let query = "";
+                let type = "";
+
                 try {
                     const parsed =
                         typeof data === "string" ? JSON.parse(data) : data;
                     query = (parsed.query || "").trim();
+                    type = (parsed.type || "").trim().toLowerCase();
                 } catch (e) {
                     return JSON.stringify({
                         error: "Could not parse input data.",
@@ -21,9 +24,91 @@
                     return JSON.stringify({ error: "No query provided." });
                 }
 
+                // ── Weather via Open-Meteo (free, no key needed) ─────────────────────────
+                if (
+                    type === "weather" ||
+                    /weather|temperature|forecast|rain|humidity/i.test(query)
+                ) {
+                    try {
+                        // Extract location name from query
+                        const location =
+                            query
+                                .replace(
+                                    /weather|current|today|forecast|temperature|in|for/gi,
+                                    "",
+                                )
+                                .trim() || query;
+
+                        // Geocode location using Open-Meteo's geocoding API
+                        const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+                        const geoRes = await fetch(geoUrl);
+                        const geoData = await geoRes.json();
+
+                        if (!geoData.results || geoData.results.length === 0) {
+                            return JSON.stringify({
+                                error: `Could not find location: "${location}". Try a more specific city name.`,
+                            });
+                        }
+
+                        const place = geoData.results[0];
+                        const { latitude, longitude, name, country, timezone } =
+                            place;
+
+                        // Fetch current weather
+                        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,apparent_temperature&wind_speed_unit=kmh&timezone=${encodeURIComponent(timezone)}`;
+                        const weatherRes = await fetch(weatherUrl);
+                        const weatherData = await weatherRes.json();
+                        const c = weatherData.current;
+
+                        const codeMap = {
+                            0: "Clear sky",
+                            1: "Mainly clear",
+                            2: "Partly cloudy",
+                            3: "Overcast",
+                            45: "Foggy",
+                            48: "Icy fog",
+                            51: "Light drizzle",
+                            53: "Moderate drizzle",
+                            55: "Dense drizzle",
+                            61: "Slight rain",
+                            63: "Moderate rain",
+                            65: "Heavy rain",
+                            71: "Slight snow",
+                            73: "Moderate snow",
+                            75: "Heavy snow",
+                            80: "Slight showers",
+                            81: "Moderate showers",
+                            82: "Violent showers",
+                            95: "Thunderstorm",
+                            96: "Thunderstorm with hail",
+                            99: "Thunderstorm with heavy hail",
+                        };
+                        const condition = codeMap[c.weather_code] || "Unknown";
+
+                        return JSON.stringify({
+                            result: {
+                                source: "SKILL_EXECUTED",
+                                type: "weather",
+                                location: `${name}, ${country}`,
+                                condition,
+                                temperature_c: c.temperature_2m,
+                                feels_like_c: c.apparent_temperature,
+                                humidity_percent: c.relative_humidity_2m,
+                                wind_kmh: c.wind_speed_10m,
+                                updated: c.time,
+                                source_url: "https://open-meteo.com",
+                            },
+                        });
+                    } catch (e) {
+                        return JSON.stringify({
+                            error: `Weather lookup failed: ${e.message}`,
+                        });
+                    }
+                }
+
+                // ── General search: DuckDuckGo → Wikipedia fallback ─────────────────────
                 let results = [];
 
-                // 1. DuckDuckGo Instant Answer API
                 try {
                     const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
                     const ddgRes = await fetch(ddgUrl);
@@ -36,38 +121,30 @@
                             url: ddg.AbstractURL || "",
                         });
                     }
-
                     for (const t of (ddg.RelatedTopics || []).slice(0, 4)) {
-                        if (t.Text && t.FirstURL) {
+                        if (t.Text && t.FirstURL)
                             results.push({
                                 title: t.Text.substring(0, 80),
                                 snippet: t.Text,
                                 url: t.FirstURL,
                             });
-                        }
                         for (const s of (t.Topics || []).slice(0, 2)) {
-                            if (s.Text && s.FirstURL) {
+                            if (s.Text && s.FirstURL)
                                 results.push({
                                     title: s.Text.substring(0, 80),
                                     snippet: s.Text,
                                     url: s.FirstURL,
                                 });
-                            }
                         }
                     }
-
-                    if (ddg.Answer && results.length === 0) {
+                    if (ddg.Answer && results.length === 0)
                         results.push({
                             title: "Answer",
                             snippet: ddg.Answer,
                             url: "",
                         });
-                    }
-                } catch (e) {
-                    // DuckDuckGo failed, fall through to Wikipedia
-                }
+                } catch (e) {}
 
-                // 2. Wikipedia fallback
                 if (results.length === 0) {
                     try {
                         const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`;
@@ -80,19 +157,18 @@
                                 url: `https://en.wikipedia.org/wiki/${encodeURIComponent(h.title.replace(/ /g, "_"))}`,
                             });
                         }
-                    } catch (e) {
-                        // Wikipedia also failed
-                    }
+                    } catch (e) {}
                 }
 
                 if (results.length === 0) {
                     return JSON.stringify({
-                        error: `No results found for "${query}". Try a more specific search term.`,
+                        error: `No results found for "${query}". Try a different search term.`,
                     });
                 }
 
                 return JSON.stringify({
                     result: {
+                        source: "SKILL_EXECUTED",
                         query,
                         results: results.slice(0, 5),
                     },
