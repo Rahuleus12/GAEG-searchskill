@@ -1,19 +1,22 @@
 ---
-name: google-search
-description: Search the web using DuckDuckGo and Wikipedia APIs.
+name: web-search
+description: Search the web using DuckDuckGo and Wikipedia. Use when the user asks about current events, facts, news, research, or any topic requiring up-to-date information.
+license: Apache-2.0
+compatibility: Requires Google AI Edge Gallery (run_js webview environment and index.html)
+allowed-tools: run_js
+metadata:
+  author: your-name
+  version: "1.0"
 ---
-
-# Google Search
+# Web Search
 
 ## Instructions
-
 Call the `run_js` tool using `index.html` and a JSON string for `data` with the following fields:
-- **query**: Required. Extract ONLY the primary search keywords or topic (e.g., "quantum computing", "James Webb Space Telescope", "climate change research"). Remove question words, conversational text, or modifiers (e.g., do NOT include "latest", "news about", "look up", "find info about"). Provide the core search terms that would best match the user's information need.
+- **query**: Required. Extract ONLY the primary search keywords or topic (e.g., "quantum computing", "James Webb Space Telescope"). Remove question words, conversational text, or modifiers — do NOT include "latest", "news about", "look up". Provide the core terms that best match the user's information need.
 
 ## Constraints
-
-- Summarize the key findings from the search results in 3-5 sentences to conserve context. Always ensure your response ends with a finished sentence.
-- Always include source URLs from the results so the user can verify information.
-- If the search returns no results or the results are not relevant to the user's question, briefly state this and suggest 1-2 alternative search queries that might be more helpful.
-- If the user asks follow-up questions, perform a new search with a refined query based on the additional context.
-- Do not fabricate information beyond what is returned in the search results.
+- Summarize key findings in 3–5 sentences. Always end with a complete sentence.
+- Always include source URLs so the user can verify information.
+- If results are empty or irrelevant, say so and suggest 1–2 alternative queries.
+- For follow-up questions, run a new refined search — do not reuse prior results.
+- Do not fabricate information beyond what the search returns.
