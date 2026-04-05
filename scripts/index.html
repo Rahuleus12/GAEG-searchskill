@@ -1,148 +1,100 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Google Search Skill</title>
-</head>
-<body>
-<script>
-(async () => {
-  // ── Parse input ──────────────────────────────────────────────────────────
-  let query = "";
-  try {
-    const raw = typeof data !== "undefined" ? data : "{}";
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    query = (parsed.query || "").trim();
-  } catch (e) {
-    output(JSON.stringify({ error: "Invalid input: could not parse data field.", results: [] }));
-    return;
-  }
+    <head>
+        <meta charset="UTF-8" />
+    </head>
+    <body>
+        <script>
+            (async () => {
+                function done(obj) {
+                    skill.postMessage(JSON.stringify(obj));
+                }
 
-  if (!query) {
-    output(JSON.stringify({ error: "No query provided.", results: [] }));
-    return;
-  }
+                let query = "";
+                try {
+                    const parsed =
+                        typeof data === "string" ? JSON.parse(data) : data;
+                    query = (parsed.query || "").trim();
+                } catch (e) {
+                    done({ error: "Could not parse input.", results: [] });
+                    return;
+                }
 
-  // ── DuckDuckGo Instant Answer API ────────────────────────────────────────
-  let results = [];
-  try {
-    const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-    const ddgRes = await fetch(ddgUrl);
-    if (ddgRes.ok) {
-      const ddg = await ddgRes.json();
+                if (!query) {
+                    done({ error: "No query provided.", results: [] });
+                    return;
+                }
 
-      // Abstract (direct answer)
-      if (ddg.AbstractText) {
-        results.push({
-          title: ddg.Heading || query,
-          snippet: ddg.AbstractText,
-          url: ddg.AbstractURL || ddg.AbstractSource || ""
-        });
-      }
+                let results = [];
 
-      // Related topics
-      if (Array.isArray(ddg.RelatedTopics)) {
-        for (const topic of ddg.RelatedTopics.slice(0, 4)) {
-          if (topic.Text && topic.FirstURL) {
-            results.push({
-              title: topic.Text.split(" - ")[0] || topic.Text.substring(0, 60),
-              snippet: topic.Text,
-              url: topic.FirstURL
-            });
-          }
-          // Nested topics (DDG sometimes wraps topics in sub-arrays)
-          if (Array.isArray(topic.Topics)) {
-            for (const sub of topic.Topics.slice(0, 2)) {
-              if (sub.Text && sub.FirstURL) {
-                results.push({
-                  title: sub.Text.substring(0, 60),
-                  snippet: sub.Text,
-                  url: sub.FirstURL
-                });
-              }
-            }
-          }
-        }
-      }
+                // 1. Try DuckDuckGo
+                try {
+                    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+                    const res = await fetch(url);
+                    const ddg = await res.json();
 
-      // Answer (e.g. calculations, conversions)
-      if (ddg.Answer && results.length === 0) {
-        results.push({
-          title: "Quick Answer",
-          snippet: ddg.Answer,
-          url: ""
-        });
-      }
-    }
-  } catch (e) {
-    // DuckDuckGo failed — will fall through to Wikipedia
-  }
+                    if (ddg.AbstractText) {
+                        results.push({
+                            title: ddg.Heading || query,
+                            snippet: ddg.AbstractText,
+                            url: ddg.AbstractURL || "",
+                        });
+                    }
 
-  // ── Wikipedia fallback ───────────────────────────────────────────────────
-  if (results.length === 0) {
-    try {
-      const wikiSearchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`;
-      const wikiSearchRes = await fetch(wikiSearchUrl);
-      if (wikiSearchRes.ok) {
-        const wikiSearch = await wikiSearchRes.json();
-        const hits = (wikiSearch.query && wikiSearch.query.search) || [];
+                    for (const t of (ddg.RelatedTopics || []).slice(0, 4)) {
+                        if (t.Text && t.FirstURL) {
+                            results.push({
+                                title: t.Text.substring(0, 80),
+                                snippet: t.Text,
+                                url: t.FirstURL,
+                            });
+                        }
+                        for (const s of (t.Topics || []).slice(0, 2)) {
+                            if (s.Text && s.FirstURL) {
+                                results.push({
+                                    title: s.Text.substring(0, 80),
+                                    snippet: s.Text,
+                                    url: s.FirstURL,
+                                });
+                            }
+                        }
+                    }
 
-        for (const hit of hits) {
-          const cleanSnippet = hit.snippet.replace(/<[^>]+>/g, "");
-          results.push({
-            title: hit.title,
-            snippet: cleanSnippet,
-            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(hit.title.replace(/ /g, "_"))}`
-          });
-        }
-      }
-    } catch (e) {
-      // Wikipedia also failed
-    }
-  }
+                    if (ddg.Answer && results.length === 0) {
+                        results.push({
+                            title: "Answer",
+                            snippet: ddg.Answer,
+                            url: "",
+                        });
+                    }
+                } catch (e) {}
 
-  // ── Wikipedia summary for top result (if still only DDG snippets) ────────
-  if (results.length > 0 && results[0].url && results[0].url.includes("wikipedia.org")) {
-    try {
-      const title = decodeURIComponent(results[0].url.split("/wiki/")[1] || "");
-      if (title) {
-        const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-        const summaryRes = await fetch(summaryUrl);
-        if (summaryRes.ok) {
-          const summary = await summaryRes.json();
-          if (summary.extract) {
-            results[0].snippet = summary.extract.substring(0, 500);
-          }
-        }
-      }
-    } catch (e) {
-      // Ignore — use existing snippet
-    }
-  }
+                // 2. Fallback to Wikipedia
+                if (results.length === 0) {
+                    try {
+                        const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`;
+                        const res = await fetch(url);
+                        const wiki = await res.json();
+                        for (const h of wiki.query?.search || []) {
+                            results.push({
+                                title: h.title,
+                                snippet: h.snippet.replace(/<[^>]+>/g, ""),
+                                url: `https://en.wikipedia.org/wiki/${encodeURIComponent(h.title.replace(/ /g, "_"))}`,
+                            });
+                        }
+                    } catch (e) {}
+                }
 
-  // ── Output ───────────────────────────────────────────────────────────────
-  if (results.length === 0) {
-    output(JSON.stringify({
-      query,
-      error: "No results found. Try a more specific or different query.",
-      results: []
-    }));
-  } else {
-    output(JSON.stringify({
-      query,
-      results: results.slice(0, 5)
-    }));
-  }
-
-  function output(str) {
-    if (typeof window !== "undefined" && window.skillOutput) {
-      window.skillOutput(str);
-    } else {
-      document.title = str;
-    }
-  }
-})();
-</script>
-</body>
+                if (results.length === 0) {
+                    done({
+                        query,
+                        error: "No results found. Try a different search term.",
+                        results: [],
+                    });
+                } else {
+                    done({ query, results: results.slice(0, 5) });
+                }
+            })();
+        </script>
+    </body>
 </html>
