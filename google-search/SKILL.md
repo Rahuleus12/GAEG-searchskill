@@ -1,6 +1,6 @@
 ---
 name: google-search
-description: Search the web for information on any topic using DuckDuckGo and Wikipedia APIs, and return a summary of top results with sources.
+description: Search the web using DuckDuckGo and Wikipedia APIs.
 ---
 
 # Google Search
