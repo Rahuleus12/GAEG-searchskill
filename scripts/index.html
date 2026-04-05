@@ -6,7 +6,6 @@
     <body>
         <script>
             window.ai_edge_gallery_get_result = async function (data) {
-                // ── Parse input ───────────────────────────────────────────────────────────
                 let query = "",
                     type = "",
                     url = "";
@@ -18,94 +17,148 @@
                     url = (parsed.url || "").trim();
                 } catch (e) {
                     return JSON.stringify({
-                        error: "Could not parse input data.",
+                        error: "Parse failed: " + e.message,
                     });
                 }
-                if (!query && !url)
-                    return JSON.stringify({
-                        error: "No query or URL provided.",
-                    });
 
-                // ── Extract YouTube URL from query if embedded in text ────────────────────
+                // ── Extract YouTube URL from anywhere in the query ────────────────────────
                 if (!url) {
-                    const match = query.match(
+                    const m = query.match(
                         /https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]+/,
                     );
-                    if (match) url = match[0];
+                    if (m) url = m[0];
                 }
 
-                // ── Auto-detect type ──────────────────────────────────────────────────────
                 const isYouTube =
                     type === "youtube" ||
                     /youtube\.com|youtu\.be/i.test(url) ||
-                    /\byoutube\b|\byoutu\.be\b|\byt\b.*video|video.*\byt\b/i.test(
-                        query,
-                    );
-
+                    /\byoutube\b/i.test(query);
                 const isWeather =
                     type === "weather" ||
-                    /\bweather\b|\btemperature\b|\bforecast\b|\brain today\b|\bhumidity\b/i.test(
-                        query,
-                    );
-
+                    /\bweather\b|\bforecast\b|\btemperature\b/i.test(query);
                 const isNews =
                     type === "news" ||
-                    /\bnews\b|\blatest\b|\bbreaking\b|\bheadlines?\b|\brecent\b|\bcurrent events?\b|\bwhat happened\b/i.test(
+                    /\bnews\b|\blatest\b|\bbreaking\b|\bheadlines?\b/i.test(
                         query,
                     );
 
+                // ── STEP 1: confirm skill is running with a fetch test ────────────────────
+                // Try Wikipedia first — we know it works — to confirm fetch itself works
+                let fetchWorking = false;
+                try {
+                    const test = await fetch(
+                        "https://en.wikipedia.org/api/rest_v1/page/summary/Test?origin=*",
+                    );
+                    fetchWorking = test.ok;
+                } catch (e) {}
+
                 // ══════════════════════════════════════════════════════════════════════════
-                // 1. YOUTUBE — noembed.com (confirmed CORS-open proxy, no key needed)
+                // YOUTUBE
                 // ══════════════════════════════════════════════════════════════════════════
                 if (isYouTube) {
                     if (!url) {
                         return JSON.stringify({
-                            error: "Please include the YouTube video URL in your message, e.g. 'get info for https://youtu.be/abc123'",
+                            result: {
+                                source: "SKILL_EXECUTED",
+                                type: "youtube",
+                                error: "No URL found. Paste the full YouTube URL in your message.",
+                                fetch_working: fetchWorking,
+                            },
                         });
                     }
-                    try {
-                        // noembed.com is a CORS-open oEmbed proxy — works reliably in webviews
-                        const noembedUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}&format=json`;
-                        const res = await fetch(noembedUrl);
-                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                        const v = await res.json();
 
-                        if (v.error)
-                            return JSON.stringify({
-                                error: `YouTube info not available: ${v.error}`,
-                            });
+                    // Extract video ID
+                    const vidIdMatch = url.match(
+                        /(?:v=|youtu\.be\/)([^&?/\s]+)/,
+                    );
+                    const videoId = vidIdMatch ? vidIdMatch[1] : null;
 
-                        // Extract video ID for thumbnail fallback
-                        const vidIdMatch = url.match(
-                            /(?:v=|youtu\.be\/)([^&?/]+)/,
-                        );
-                        const videoId = vidIdMatch ? vidIdMatch[1] : null;
-                        const thumbnail = videoId
-                            ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`
-                            : v.thumbnail_url || "";
-
+                    if (!videoId) {
                         return JSON.stringify({
                             result: {
                                 source: "SKILL_EXECUTED",
                                 type: "youtube",
-                                title: v.title || "Unknown title",
-                                channel: v.author_name || "Unknown channel",
-                                channel_url: v.author_url || "",
-                                thumbnail,
-                                video_url: url,
-                                width: v.width,
-                                height: v.height,
+                                error:
+                                    "Could not extract video ID from: " + url,
                             },
                         });
-                    } catch (e) {
-                        return JSON.stringify({
-                            error: `YouTube lookup failed: ${e.message}. Check the URL is public and correct.`,
-                        });
                     }
+
+                    // Try 3 different endpoints in order, report which one worked
+                    let tried = [];
+
+                    // Attempt 1: noembed.com
+                    try {
+                        const r = await fetch(
+                            `https://noembed.com/embed?url=${encodeURIComponent(url)}&format=json`,
+                        );
+                        if (r.ok) {
+                            const v = await r.json();
+                            if (v.title) {
+                                return JSON.stringify({
+                                    result: {
+                                        source: "SKILL_EXECUTED",
+                                        type: "youtube",
+                                        via: "noembed.com",
+                                        title: v.title,
+                                        channel: v.author_name,
+                                        channel_url: v.author_url,
+                                        thumbnail: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+                                        video_url: url,
+                                    },
+                                });
+                            }
+                        }
+                        tried.push("noembed: " + r.status);
+                    } catch (e) {
+                        tried.push("noembed: " + e.message);
+                    }
+
+                    // Attempt 2: youtube.com/oembed directly
+                    try {
+                        const r = await fetch(
+                            `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
+                        );
+                        if (r.ok) {
+                            const v = await r.json();
+                            if (v.title) {
+                                return JSON.stringify({
+                                    result: {
+                                        source: "SKILL_EXECUTED",
+                                        type: "youtube",
+                                        via: "youtube.com/oembed",
+                                        title: v.title,
+                                        channel: v.author_name,
+                                        channel_url: v.author_url,
+                                        thumbnail: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+                                        video_url: url,
+                                    },
+                                });
+                            }
+                        }
+                        tried.push("yt-oembed: " + r.status);
+                    } catch (e) {
+                        tried.push("yt-oembed: " + e.message);
+                    }
+
+                    // Attempt 3: Return what we CAN get without any API
+                    // Video ID + thumbnail URL (img.youtube.com has no CORS)
+                    return JSON.stringify({
+                        result: {
+                            source: "SKILL_EXECUTED",
+                            type: "youtube",
+                            note: "Could not fetch title (API blocked). Video ID and thumbnail available.",
+                            video_id: videoId,
+                            thumbnail: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+                            video_url: url,
+                            watch_url: `https://www.youtube.com/watch?v=${videoId}`,
+                            tried,
+                        },
+                    });
                 }
 
                 // ══════════════════════════════════════════════════════════════════════════
-                // 2. WEATHER — Open-Meteo (no key, confirmed CORS-open)
+                // WEATHER
                 // ══════════════════════════════════════════════════════════════════════════
                 if (isWeather) {
                     try {
@@ -116,14 +169,13 @@
                                     "",
                                 )
                                 .trim() || query;
-
                         const geoRes = await fetch(
                             `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`,
                         );
                         const geoData = await geoRes.json();
                         if (!geoData.results?.length)
                             return JSON.stringify({
-                                error: `Location not found: "${location}". Try a city name like "Mumbai" or "Tokyo".`,
+                                error: `Location not found: "${location}"`,
                             });
 
                         const { latitude, longitude, name, country, timezone } =
@@ -132,7 +184,6 @@
                             `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,apparent_temperature&wind_speed_unit=kmh&timezone=${encodeURIComponent(timezone)}`,
                         );
                         const w = (await wRes.json()).current;
-
                         const codes = {
                             0: "Clear sky",
                             1: "Mainly clear",
@@ -173,82 +224,82 @@
                         });
                     } catch (e) {
                         return JSON.stringify({
-                            error: `Weather lookup failed: ${e.message}`,
+                            error: "Weather failed: " + e.message,
                         });
                     }
                 }
 
                 // ══════════════════════════════════════════════════════════════════════════
-                // 3. NEWS — Wikipedia OpenSearch + Page Summaries (confirmed CORS-open)
-                //    Uses Wikipedia's live search which surfaces recent topics & events
+                // NEWS — Wikipedia summary (confirmed working) + DuckDuckGo
                 // ══════════════════════════════════════════════════════════════════════════
                 if (isNews) {
                     let articles = [];
+                    let tried = [];
 
-                    // Step 1: OpenSearch to find matching article titles
+                    // Wikipedia OpenSearch
                     try {
-                        const searchRes = await fetch(
-                            `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=4&format=json&origin=*`,
+                        const sr = await fetch(
+                            `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=5&format=json&origin=*`,
                         );
-                        const [, titles, , links] = await searchRes.json();
-
-                        // Step 2: Fetch summary for each result
+                        const [, titles, descs, links] = await sr.json();
                         for (let i = 0; i < Math.min(titles.length, 3); i++) {
                             try {
-                                const sumRes = await fetch(
+                                const s = await fetch(
                                     `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(titles[i].replace(/ /g, "_"))}`,
                                 );
-                                if (!sumRes.ok) continue;
-                                const s = await sumRes.json();
-                                articles.push({
-                                    title: s.title,
-                                    snippet: s.extract
-                                        ? s.extract.substring(0, 300)
-                                        : "",
-                                    url:
-                                        s.content_urls?.desktop?.page ||
-                                        links[i] ||
-                                        "",
-                                    source: "Wikipedia",
-                                });
+                                if (s.ok) {
+                                    const p = await s.json();
+                                    articles.push({
+                                        title: p.title,
+                                        snippet: (p.extract || "").substring(
+                                            0,
+                                            300,
+                                        ),
+                                        url:
+                                            p.content_urls?.desktop?.page ||
+                                            links[i],
+                                        source: "Wikipedia",
+                                    });
+                                }
                             } catch (e) {}
                         }
-                    } catch (e) {}
+                        tried.push(
+                            "wikipedia: ok, " + articles.length + " results",
+                        );
+                    } catch (e) {
+                        tried.push("wikipedia: " + e.message);
+                    }
 
-                    // Step 3: DuckDuckGo for additional context
-                    if (articles.length < 2) {
-                        try {
-                            const ddg = await (
-                                await fetch(
-                                    `https://api.duckduckgo.com/?q=${encodeURIComponent(query + " news")}&format=json&no_html=1&skip_disambig=1`,
-                                )
-                            ).json();
-                            if (ddg.AbstractText) {
+                    // DuckDuckGo
+                    try {
+                        const ddg = await (
+                            await fetch(
+                                `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
+                            )
+                        ).json();
+                        if (ddg.AbstractText)
+                            articles.push({
+                                title: ddg.Heading || query,
+                                snippet: ddg.AbstractText,
+                                url: ddg.AbstractURL || "",
+                                source: "DuckDuckGo",
+                            });
+                        for (const t of (ddg.RelatedTopics || []).slice(0, 3))
+                            if (t.Text && t.FirstURL)
                                 articles.push({
-                                    title: ddg.Heading || query,
-                                    snippet: ddg.AbstractText,
-                                    url: ddg.AbstractURL || "",
+                                    title: t.Text.substring(0, 80),
+                                    snippet: t.Text,
+                                    url: t.FirstURL,
                                     source: "DuckDuckGo",
                                 });
-                            }
-                            for (const t of (ddg.RelatedTopics || []).slice(
-                                0,
-                                3,
-                            )) {
-                                if (t.Text && t.FirstURL)
-                                    articles.push({
-                                        title: t.Text.substring(0, 80),
-                                        snippet: t.Text,
-                                        url: t.FirstURL,
-                                        source: "DuckDuckGo",
-                                    });
-                            }
-                        } catch (e) {}
+                        tried.push("duckduckgo: ok");
+                    } catch (e) {
+                        tried.push("duckduckgo: " + e.message);
                     }
 
                     if (!articles.length)
                         return JSON.stringify({
-                            error: `No news results found for "${query}". Try more specific keywords.`,
+                            error: `No news results for "${query}". Tried: ${tried.join(", ")}`,
                         });
 
                     return JSON.stringify({
@@ -256,17 +307,16 @@
                             source: "SKILL_EXECUTED",
                             type: "news",
                             query,
-                            note: "Results from Wikipedia and DuckDuckGo. For live breaking news, include a specific topic.",
+                            tried,
                             articles: articles.slice(0, 5),
                         },
                     });
                 }
 
                 // ══════════════════════════════════════════════════════════════════════════
-                // 4. GENERAL — DuckDuckGo → Wikipedia fallback
+                // GENERAL — DuckDuckGo → Wikipedia
                 // ══════════════════════════════════════════════════════════════════════════
                 let results = [];
-
                 try {
                     const ddg = await (
                         await fetch(
@@ -319,9 +369,8 @@
 
                 if (!results.length)
                     return JSON.stringify({
-                        error: `No results found for "${query}". Try different keywords.`,
+                        error: `No results for "${query}".`,
                     });
-
                 return JSON.stringify({
                     result: {
                         source: "SKILL_EXECUTED",
